@@ -3,5 +3,3 @@ pandas
 yfinance
 requests
 beautifulsoup4
-pykrx
-setuptools

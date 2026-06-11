@@ -33,9 +33,9 @@ def to_float(val):
     except:
         return None
 
-# 3. 데이터 크롤링 핵심 엔진 (pykrx 제거, 순수 네이버/야후 기반)
+# 3. 데이터 크롤링 핵심 엔진
 def get_clean_data(ticker_code):
-    price, bps, roe_current, roe_5y, corp_name = None, None, None, None, ticker_code
+    p, b, r_c, r_5, c_name = None, None, None, None, ticker_code
     
     # [A] 한국 주식 (순수 네이버 금융 크롤링)
     if ticker_code.isdigit() and len(ticker_code) == 6:
@@ -47,10 +47,10 @@ def get_clean_data(ticker_code):
         soup = BeautifulSoup(res.text, 'html.parser')
         
         name_tag = soup.select_once('.wrap_company h2 a')
-        if name_tag: corp_name = name_tag.text
+        if name_tag: c_name = name_tag.text
         
         price_tag = soup.select_once('.no_today .blind')
-        if price_tag: price = to_float(price_tag.text)
+        if price_tag: p = to_float(price_tag.text)
         
         table = soup.select_once('table.tb_type1_ifrs')
         if table:
@@ -64,30 +64,30 @@ def get_clean_data(ticker_code):
                 if title == 'ROE(%)':
                     roes_annual = [v for v in vals[:4] if v is not None]
                     roes_quarter = [v for v in vals[4:] if v is not None]
-                    if roes_quarter: roe_current = roes_quarter[-1]
-                    elif roes_annual: roe_current = roes_annual[-1]
-                    if roes_annual: roe_5y = sum(roes_annual) / len(roes_annual)
+                    if roes_quarter: r_c = roes_quarter[-1]
+                    elif roes_annual: r_c = roes_annual[-1]
+                    if roes_annual: r_5 = sum(roes_annual) / len(roes_annual)
                 elif title == 'BPS(원)':
                     for v in reversed(vals):
                         if v is not None:
-                            bps = v
+                            b = v
                             break
                             
-        return price, bps, roe_current, roe_5y, corp_name
+        return p, b, r_c, r_5, c_name
 
     # [B] 미국 주식 (야후 파이낸스)
     else:
         stock_yf = yf.Ticker(ticker_code)
         info = stock_yf.info
-        price = info.get('currentPrice') or info.get('regularMarketPrice')
-        bps = info.get('bookValue')
-        if bps is None and price is not None and info.get('priceToBook'):
-            bps = price / info.get('priceToBook')
+        p = info.get('currentPrice') or info.get('regularMarketPrice')
+        b = info.get('bookValue')
+        if b is None and p is not None and info.get('priceToBook'):
+            b = p / info.get('priceToBook')
             
-        roe_current = info.get('returnOnEquity')
-        if roe_current: roe_current *= 100
+        r_c = info.get('returnOnEquity')
+        if r_c: r_c *= 100
             
-        roe_5y = None
+        r_5 = None
         try:
             fin = stock_yf.financials
             bs = stock_yf.balance_sheet
@@ -100,13 +100,18 @@ def get_clean_data(ticker_code):
                     for col in common_cols:
                         if pd.notna(ni_row[col]) and pd.notna(eq_row[col]) and eq_row[col] != 0:
                             roe_list.append((ni_row[col] / eq_row[col]) * 100)
-            if roe_list: roe_5y = sum(roe_list[:5]) / len(roe_list[:5])
+            if roe_list: r_5 = sum(roe_list[:5]) / len(roe_list[:5])
         except: pass
-        if roe_5y is None: roe_5y = roe_current
+        if r_5 is None: r_5 = r_c
         
-        return price, bps, roe_current, roe_5y, info.get('longName', ticker_code)
+        return p, b, r_c, r_5, info.get('longName', ticker_code)
 
-# 4. 분석 실행
+# ==========================================
+# 4. 분석 실행 (💡 여기가 핵심 수정 부분입니다!)
+# 사전에 빈 상자를 만들어두어 에러를 방지합니다.
+# ==========================================
+price, bps, roe_current, roe_5y, corp_name = None, None, None, None, ticker_input
+
 with st.spinner("데이터를 분석 중입니다..."):
     if manual_override:
         price = manual_price if manual_price > 0 else None
@@ -119,10 +124,10 @@ with st.spinner("데이터를 분석 중입니다..."):
             try:
                 price, bps, roe_current, roe_5y, corp_name = get_clean_data(ticker_input)
             except Exception as e:
-                st.error("크롤링 중 오류가 발생했습니다. 잠시 후 시도하거나 수동 모드를 이용해주세요.")
+                st.warning("네이버 금융 보안망에 의해 자동 수집이 차단되었습니다. 왼쪽 사이드바의 '수동 모드 활성화'를 체크하고 직접 입력해 주세요.")
 
 # 5. 결과 대시보드
-if price and bps:
+if price is not None and bps is not None:
     st.header(f"🏢 {corp_name} 분석 결과")
     
     col1, col2, col3 = st.columns(3)

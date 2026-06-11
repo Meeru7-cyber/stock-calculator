@@ -3,11 +3,9 @@ import pandas as pd
 import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
-from pykrx import stock
-from datetime import datetime, timedelta
 import math
 
-# 1. 페이지 및 상단 UI 설정
+# 1. 페이지 설정
 st.set_page_config(page_title="고급 가치투자 계산기", layout="wide")
 st.title("📊 가치투자 기대수익률(R) 계산기")
 st.markdown("---")
@@ -26,7 +24,7 @@ with st.sidebar:
     manual_roe_current = st.number_input("현재 분기 ROE (%)", value=0.0, step=0.1)
     manual_roe_5y = st.number_input("5년 평균 ROE (%)", value=0.0, step=0.1)
 
-# 데이터 정제용 안전 함수
+# 문자열 변환 안전 함수
 def to_float(val):
     try:
         v = str(val).replace(',', '').strip()
@@ -35,84 +33,49 @@ def to_float(val):
     except:
         return None
 
-# 3. 데이터 통합 크롤링 엔진 (이중화 처리)
+# 3. 데이터 크롤링 핵심 엔진 (pykrx 제거, 순수 네이버/야후 기반)
 def get_clean_data(ticker_code):
     price, bps, roe_current, roe_5y, corp_name = None, None, None, None, ticker_code
     
-    # [A] 한국 주식 (네이버 금융 + pykrx 백업)
+    # [A] 한국 주식 (순수 네이버 금융 크롤링)
     if ticker_code.isdigit() and len(ticker_code) == 6:
-        # 1차 시도: 네이버 금융 (우회 접속)
-        try:
-            url = f"https://finance.naver.com/item/main.naver?code={ticker_code}"
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
-            }
-            res = requests.get(url, headers=headers, timeout=5)
-            soup = BeautifulSoup(res.text, 'html.parser')
-            
-            name_tag = soup.select_once('.wrap_company h2 a')
-            if name_tag: corp_name = name_tag.text
-            
-            price_tag = soup.select_once('.no_today .blind')
-            if price_tag: price = to_float(price_tag.text)
-            
-            table = soup.select_once('table.tb_type1_ifrs')
-            if table:
-                for row in table.select('tbody tr'):
-                    th = row.select_once('th')
-                    if not th: continue
-                    title = th.text.strip()
-                    tds = row.select('td')
-                    vals = [to_float(td.text) for td in tds]
-                    
-                    if title == 'ROE(%)':
-                        roes_annual = [v for v in vals[:4] if v is not None]
-                        roes_quarter = [v for v in vals[4:] if v is not None]
-                        if roes_quarter: roe_current = roes_quarter[-1]
-                        elif roes_annual: roe_current = roes_annual[-1]
-                        if roes_annual: roe_5y = sum(roes_annual) / len(roes_annual)
-                    elif title == 'BPS(원)':
-                        for v in reversed(vals):
-                            if v is not None:
-                                bps = v
-                                break
-        except Exception:
-            pass # 네이버 차단 시 백업 엔진으로 자동 진입
-            
-        # 2차 시도: pykrx (한국거래소 공식 데이터 백업)
-        if None in (price, bps, roe_current, roe_5y):
-            today = datetime.today()
-            if corp_name == ticker_code:
-                corp_name = stock.get_market_ticker_name(ticker_code)
+        url = f"https://finance.naver.com/item/main.naver?code={ticker_code}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+        }
+        res = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        name_tag = soup.select_once('.wrap_company h2 a')
+        if name_tag: corp_name = name_tag.text
+        
+        price_tag = soup.select_once('.no_today .blind')
+        if price_tag: price = to_float(price_tag.text)
+        
+        table = soup.select_once('table.tb_type1_ifrs')
+        if table:
+            for row in table.select('tbody tr'):
+                th = row.select_once('th')
+                if not th: continue
+                title = th.text.strip()
+                tds = row.select('td')
+                vals = [to_float(td.text) for td in tds]
                 
-            for i in range(5):
-                t_date = (today - timedelta(days=i)).strftime("%Y%m%d")
-                df_f = stock.get_market_fundamental(t_date, t_date, ticker_code)
-                df_o = stock.get_market_ohlcv_by_date(t_date, t_date, ticker_code)
-                
-                if not df_f.empty and not df_o.empty and df_f['PBR'].iloc[0] > 0:
-                    if price is None: price = df_o['종가'].iloc[0]
-                    if bps is None: bps = df_f['BPS'].iloc[0]
-                    
-                    pbr = df_f['PBR'].iloc[0]
-                    per = df_f['PER'].iloc[0]
-                    if roe_current is None and per > 0:
-                        roe_current = (pbr / per) * 100
-                    break
-                    
-            if roe_5y is None:
-                start_date = (today - timedelta(days=5*365)).strftime("%Y%m%d")
-                df_hist = stock.get_market_fundamental_by_date(start_date, today.strftime("%Y%m%d"), ticker_code, freq="Y")
-                if not df_hist.empty:
-                    df_hist['ROE'] = df_hist.apply(lambda row: (row['PBR'] / row['PER'] * 100) if row['PER'] > 0 else None, axis=1)
-                    valid_roes = df_hist['ROE'].dropna()
-                    if not valid_roes.empty: roe_5y = valid_roes.mean()
-                    else: roe_5y = roe_current
-
+                if title == 'ROE(%)':
+                    roes_annual = [v for v in vals[:4] if v is not None]
+                    roes_quarter = [v for v in vals[4:] if v is not None]
+                    if roes_quarter: roe_current = roes_quarter[-1]
+                    elif roes_annual: roe_current = roes_annual[-1]
+                    if roes_annual: roe_5y = sum(roes_annual) / len(roes_annual)
+                elif title == 'BPS(원)':
+                    for v in reversed(vals):
+                        if v is not None:
+                            bps = v
+                            break
+                            
         return price, bps, roe_current, roe_5y, corp_name
 
-    # [B] 미국 주식 (yfinance)
+    # [B] 미국 주식 (야후 파이낸스)
     else:
         stock_yf = yf.Ticker(ticker_code)
         info = stock_yf.info
@@ -143,7 +106,7 @@ def get_clean_data(ticker_code):
         
         return price, bps, roe_current, roe_5y, info.get('longName', ticker_code)
 
-# 4. 분석 실행 파트
+# 4. 분석 실행
 with st.spinner("데이터를 분석 중입니다..."):
     if manual_override:
         price = manual_price if manual_price > 0 else None
@@ -156,9 +119,9 @@ with st.spinner("데이터를 분석 중입니다..."):
             try:
                 price, bps, roe_current, roe_5y, corp_name = get_clean_data(ticker_input)
             except Exception as e:
-                st.error(f"데이터 크롤링 에러 발생. 수동 모드를 이용해주세요. (상세에러: {e})")
+                st.error("크롤링 중 오류가 발생했습니다. 잠시 후 시도하거나 수동 모드를 이용해주세요.")
 
-# 5. 시뮬레이션 결과 출력
+# 5. 결과 대시보드
 if price and bps:
     st.header(f"🏢 {corp_name} 분석 결과")
     
